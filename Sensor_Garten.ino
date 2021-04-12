@@ -1,5 +1,4 @@
 #include <FS.h>
-#include <NTPClient.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <ESPAsyncTCP.h>
@@ -51,9 +50,7 @@ long ntpTO = 5000;
 #include "webserver.h"
 #include "settings.h"
 
-// Define NTP Client to get time
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 3600, 60000);
+
 
 
 void leseMesswerte() {
@@ -71,7 +68,7 @@ void setup(){
   SPIFFS.begin();
   // Should load default config if run for the first time
   Serial.println(F("Loading configuration..."));
-  loadConfiguration(filename, config);
+  //loadConfiguration(filename, config);
   
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(config.hostName);
@@ -119,8 +116,7 @@ void setup(){
   server.onNotFound([](AsyncWebServerRequest *request){
     request->send(404);
   });
-  // NTP-Client start
-  timeClient.begin();
+  
   // Start ElegantOTA
   AsyncElegantOTA.begin(&server);    
   server.begin();
@@ -130,10 +126,8 @@ void loop(){
   AsyncElegantOTA.loop();
   if (millis() > ntpTO + ntpTM ) {
     ntpTM = millis();
-    timeok = timeClient.update();
     leseMesswerte();
-    akttime = timeClient.getFormattedTime();
-  }
+    }
   
   
 }
