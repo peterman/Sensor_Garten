@@ -24,8 +24,8 @@
 struct Config {
   char ssid[20]       = "Sensor";
   char wlankey[20]    = "sensorgarten";
-  //char mqtt_broker[30]= "ppfeiffer.home-webserver.de";
-  char mqtt_broker[30]= "192.168.10.8";
+  char mqtt_broker[30]= "ppfeiffer.home-webserver.de";
+  //char mqtt_broker[30]= "192.168.10.8";
   char mqtt_topic[20] = "/Garten/Sensor1/";
   char hostName[20]   = "esp-async";
   char http_user[10]  = "admin";
@@ -34,7 +34,7 @@ struct Config {
   char www_pw[10]     = "admin";
   
   int port;
-  int mqtt_port   = 1883;
+  int mqtt_port   = 11883;
 };
 
 float luftTemp, luftDruck, redLuftDruck, luftFeuchte, luftDew;
@@ -55,7 +55,7 @@ PubSubClient client(espClient);
 char daysOfTheWeek[7][12] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Sonnabend"};
 
 long ntpTM = 0;
-long ntpTO = 5000;
+long ntpTO = 30000;
 
 
 #include "webserver.h"
