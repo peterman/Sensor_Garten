@@ -3,12 +3,10 @@
 #include <WiFiUdp.h>
 #include <ESPAsyncTCP.h>
 #include <ESP8266mDNS.h>
-#include <PubSubClient.h>
 
 #include <ESPAsyncWebServer.h>
 #include <SPIFFSEditor.h>
 
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 
 #include <AsyncElegantOTA.h>
@@ -17,7 +15,14 @@
 
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
+#include <InfluxDbClient.h>
 
+#define INFLUXDB_URL "http://iot.pfeiffer-privat.de:8086"
+#define INFLUXDB_TOKEN "-hQ6CjVU1oiMTToKTETU9-P3rVDPti2W0J2-Xds9UexzxrC-BElJkMYDCQXfEI8cWSLii1POBqxJJMoiKgsmFw=="
+#define INFLUXDB_ORG "MyServer"
+#define INFLUXDB_BUCKET "Sensor Garten"
+#define DEVICE "ESP8266"
+#define TZ_INFO "CET-1CEST,M3.5.0,M10.5.0/3"
 
 
 //----------------------------------------------------------------
@@ -35,6 +40,7 @@ struct Config {
   
   int port;
   int mqtt_port   = 11883;
+  
 };
 
 float luftTemp, luftDruck, redLuftDruck, luftFeuchte, luftDew;
@@ -50,7 +56,11 @@ Config config;
 // ---------------------------- SKETCH BEGIN ---------------------
 AsyncWebServer server(80);
 WiFiClient espClient;
-PubSubClient client(espClient);
+
+// InfluxDB client instance with preconfigured InfluxCloud certificate
+InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
+// Data point
+Point sensor("sensor_status");
 
 char daysOfTheWeek[7][12] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Sonnabend"};
 
@@ -63,7 +73,6 @@ long ntpTO = 30000;
 
 
 
-
 void leseMesswerte() {
     luftTemp = bme.readTemperature();
     luftDruck = bme.readPressure() / 100.0F;
@@ -72,25 +81,6 @@ void leseMesswerte() {
     luftDew = 243.04 * (log(luftFeuchte/100.0) + ((17.625 * luftTemp)/(243.04 + luftTemp)))/(17.625 - log(luftFeuchte/100.0) - ((17.625 * luftTemp)/(243.04 + luftTemp)));
   }
 
-void MQTTPOST()
-{
-  //Preparing for mqtt send
-  temp_str = String(luftTemp); 
-  temp_str.toCharArray(temp, temp_str.length() + 1); 
-  client.publish("Garten/Sensor1/Temp", temp);
-   
-  temp_str = String(luftDruck); 
-  temp_str.toCharArray(temp, temp_str.length() + 1);
-  client.publish("Garten/Sensor1/Druck", temp);
-  
-  temp_str = String(luftFeuchte); 
-  temp_str.toCharArray(temp, temp_str.length() + 1);
-  client.publish("Garten/Sensor1/Feuchte", temp);
-  
-  temp_str = String(luftDew); 
-  temp_str.toCharArray(temp, temp_str.length() + 1);
-  client.publish("Garten/Sensor1/Taupunkt", temp);
-}
     
 void setup(){
   Serial.begin(115200);
@@ -117,7 +107,22 @@ void setup(){
 
   MDNS.addService("http","tcp",80);
 
-  
+  // Add tags
+  sensor.addTag("device", DEVICE);
+  sensor.addTag("SSID", WiFi.SSID());
+
+  // Accurate time is necessary for certificate validation and writing in batches
+  // For the fastest time sync find NTP servers in your area: https://www.pool.ntp.org/zone/
+  // Syncing progress and the time will be printed to Serial.
+  timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
+  // Check server connection
+  if (client.validateConnection()) {
+    Serial.print("Connected to InfluxDB: ");
+    Serial.println(client.getServerUrl());
+  } else {
+    Serial.print("InfluxDB connection failed: ");
+    Serial.println(client.getLastErrorMessage());
+  }
   
   
   
@@ -156,11 +161,11 @@ void setup(){
 
   server.on("/mess", HTTP_GET, [](AsyncWebServerRequest *request) {
         leseMesswerte();
-        String mess = "LuftTemperatur: " + String(luftTemp) + "°C \n";
-        mess +=       "Luftdruck:      " + String(luftDruck) + "hPa \n";
-        mess +=       "red.Luftdruck : " + String(redLuftDruck) + "hPa \n";
-        mess +=       "Luftfeuchte:    " + String(luftFeuchte) + "% \n";
-        mess +=       "Taupunkt:       " + String(luftDew) + "°C \n\n";
+        String mess = "LuftTemperatur: " + String(luftTemp) + " °C \n";
+        mess +=       "Luftdruck:      " + String(luftDruck) + " hPa \n";
+        mess +=       "red.Luftdruck : " + String(redLuftDruck) + " hPa \n";
+        mess +=       "Luftfeuchte:    " + String(luftFeuchte) + " % \n";
+        mess +=       "Taupunkt:       " + String(luftDew) + " °C \n\n";
         request->send(200, "text/plain", mess);
         mess = String();
         });  
@@ -177,7 +182,6 @@ void setup(){
   // Start ElegantOTA
   AsyncElegantOTA.begin(&server);    
   server.begin();
-  client.setServer(config.mqtt_broker, config.mqtt_port);
 }
 
 void loop(){
@@ -185,16 +189,32 @@ void loop(){
   if (millis() > ntpTO + ntpTM ) {
     ntpTM = millis();
     leseMesswerte();
-    if (!client.connected()) {
-        while (!client.connected()) {
-            client.connect("ESP8266Client");
-            Serial.println("Connect MQTT");
-            delay(100);
-        }
+
+    // Clear fields for reusing the point. Tags will remain untouched
+    sensor.clearFields();
+
+    // Store measured value into point
+    // Report RSSI of currently connected network
+    sensor.addField("rssi", WiFi.RSSI());
+    sensor.addField("temp", String(luftTemp));
+    sensor.addField("taup", String(luftDew));
+    sensor.addField("humi", String(luftFeuchte));
+    sensor.addField("pres", String(redLuftDruck));
+
+    // Print what are we exactly writing
+    Serial.print("Writing: ");
+    Serial.println(sensor.toLineProtocol());
+
+//    // Check WiFi connection and reconnect if needed
+//    if (wifiMulti.run() != WL_CONNECTED) {
+//      Serial.println("Wifi connection lost");
+//    }
+
+    // Write point
+    if (!client.writePoint(sensor)) {
+      Serial.print("InfluxDB write failed: ");
+      Serial.println(client.getLastErrorMessage());
+     }
+
     }
-    MQTTPOST();
-    Serial.println("now");
-  }
-  
-  
 }
