@@ -1,3 +1,7 @@
+
+
+
+// ----------------------------------------------------
 // Saves the configuration to a file
 void saveConfiguration(const char *filename, const Config &config) {
   SPIFFS.remove(filename);
